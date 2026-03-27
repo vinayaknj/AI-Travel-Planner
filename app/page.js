@@ -698,10 +698,15 @@ function normalizeAttractions(items) {
             category: item?.category || "Must-see",
             description: item?.description || "Worth adding to your route.",
             best_time: item?.best_time || "Flexible",
-          }
+        }
     )
     .filter((item) => {
-      const key = `${String(item.name || "").toLowerCase()}::${String(item.description || "").slice(0, 80).toLowerCase()}`;
+      const key = String(item.name || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!key) return false;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
