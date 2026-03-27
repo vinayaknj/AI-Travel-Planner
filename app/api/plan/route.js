@@ -85,6 +85,13 @@
       reasons: z.array(z.string()).optional(),
     }).passthrough();
 
+    const MustTryFoodSchema = z.object({
+      name: z.string().optional(),
+      description: z.string().optional(),
+      best_time: z.string().optional(),
+      where_to_try: z.string().optional(),
+    }).passthrough();
+
     function toArray(value) {
       if (Array.isArray(value)) return value;
       if (value == null) return [];
@@ -170,6 +177,26 @@
       return toArray(items).map(mapper).filter(Boolean);
     }
 
+    function sanitizeMustTryFoods(items) {
+      return sanitizeObjectList(items, (item) => {
+        if (typeof item === "string") {
+          return {
+            name: item,
+            description: "",
+            best_time: "",
+            where_to_try: "",
+          };
+        }
+
+        return {
+          name: item?.name || item?.dish || item?.title || "Local specialty",
+          description: item?.description || item?.note || "",
+          best_time: item?.best_time || item?.when || "",
+          where_to_try: item?.where_to_try || item?.where || item?.restaurant || "",
+        };
+      });
+    }
+
     function sanitizePlan(rawPlan, days) {
       if (!rawPlan || typeof rawPlan !== "object") return rawPlan;
 
@@ -183,6 +210,7 @@
           typeof rawPlan.climate_note === "string" ? rawPlan.climate_note : "",
         attractions: toArray(rawPlan.attractions),
         restaurants: toArray(rawPlan.restaurants),
+        must_try_foods: sanitizeMustTryFoods(rawPlan.must_try_foods),
         transport_options: toArray(rawPlan.transport_options),
         best_transport: typeof rawPlan.best_transport === "string" ? rawPlan.best_transport : "",
         local_tips: toStringList(rawPlan.local_tips),
@@ -239,6 +267,7 @@
       climate_note: z.string().optional(),
       attractions: z.array(z.union([z.string(), PlaceSchema])).optional(),
       restaurants: z.array(z.union([z.string(), PlaceSchema])).optional(),
+      must_try_foods: z.array(MustTryFoodSchema).optional(),
       transport_options: z.array(TransportOptionSchema).optional(),
       best_transport: z.string().optional(),
       budget: BudgetSchema.optional(),
@@ -307,7 +336,11 @@ Always include an itinerary with at least 1 day.`;
         .join("\n");
       const weatherSummary = weatherContext?.climate_note || "Weather data unavailable";
       const routeSummary = (routingContext?.ordered_places || [])
-        .map((item, index) => `${index + 1}. ${item.name}`)
+        .map((item, index) => {
+          const nextLeg = routingContext?.ordered_legs?.[index];
+          if (!nextLeg) return `${index + 1}. ${item.name}`;
+          return `${index + 1}. ${item.name} -> ${nextLeg.to} (${nextLeg.profile_label || "Transfer"}: ${nextLeg.duration_label}, ${nextLeg.distance_label})`;
+        })
         .join("\n");
       const weatherAlerts = (weatherContext?.safety_alerts || [])
         .map((item) => `- ${item.title}: ${item.detail}`)
@@ -324,6 +357,8 @@ Budget: ${form.budget}
 Type: ${form.travelType}
 Interests: ${(form.interests || []).join(", ")}
 Weather summary: ${weatherSummary}
+Route summary: ${routingContext?.route_note || "Routing data unavailable"}
+Estimated route total: ${routingContext?.total_duration_label || "n/a"} over ${routingContext?.total_distance_label || "n/a"}
 Suggested visit order:
 ${routeSummary || "- No routing data"}
 Weather-backed alerts:
@@ -351,6 +386,7 @@ Output:
   - itinerary
   - attractions
   - restaurants
+  - must_try_foods
   - transport_options
   - best_transport
   - budget
@@ -364,12 +400,14 @@ Output:
   - alternative_dates
 - Return at least 4 attractions when available
 - Return at least 4 restaurants or food stops when available
+- Return at least 5 must_try_foods when food interest is present, otherwise at least 3 if possible
 - Return at least 2 transport options
 - Make each itinerary slot specific and descriptive, not generic placeholders
 - Make each itinerary slot operationally useful: what to do, where to go, what to eat nearby, and why that time of day works
 - Make destination_summary 2 to 4 strong sentences
 - Make each attraction description 2 to 3 useful sentences when verified text is available
 - For restaurants, include cuisine, signature_dish, budget_level, and neighborhood for every item
+- For must_try_foods, include name, description, best_time, and where_to_try
 - Include iconic local dishes, must-try foods, or regional specialties inside restaurants, local_tips, booking_info, and itinerary descriptions
 - Make at least one food-led recommendation every day when food interest is present, or at least every other day otherwise
 - Mention specific meal moments like breakfast, lunch, snacks, dessert, or dinner whenever they improve the itinerary
@@ -382,6 +420,8 @@ Output:
 - If verified attractions/restaurants are unavailable, use broad destination-level guidance instead of fake precise venue facts
 - Use the suggested visit order and keep nearby places together
 - Include location and short transfer-aware tips when possible
+- Use routing context to decide when walking is realistic versus when a vehicle transfer makes more sense
+- Reflect route pacing in the itinerary so nearby stops feel naturally grouped
 - Keep weather notes consistent with the provided weather summary
 - If suggesting alternative dates, base them only on weather comfort, not invented pricing or crowd data
 - Write every field value in English only
@@ -417,6 +457,7 @@ Output:
         ...plan,
         attractions: mergeByIdentity(verifiedContext.attractions, plan?.attractions),
         restaurants: mergeByIdentity(verifiedContext.restaurants, plan?.restaurants),
+        must_try_foods: plan?.must_try_foods || [],
         climate_note: weatherContext?.climate_note || plan?.climate_note,
         safety_alerts: weatherContext?.safety_alerts || plan?.safety_alerts || [],
         packing_list: weatherContext?.packing_list || plan?.packing_list || {},
@@ -722,6 +763,14 @@ Output:
             climate_note: weatherContext?.climate_note || `Weather data was unavailable, so this plan uses practical seasonal assumptions for ${to}.`,
             attractions: verifiedContext?.attractions || [],
             restaurants: verifiedContext?.restaurants || [],
+            must_try_foods: [
+              {
+                name: `Signature flavors of ${to}`,
+                description: `Use this section to prioritize the most representative dishes and regional specialties during your stay in ${to}.`,
+                best_time: "Across the trip",
+                where_to_try: topRestaurant,
+              },
+            ],
             transport_options: [
               {
                 mode: "Taxi",

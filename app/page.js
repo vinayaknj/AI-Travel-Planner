@@ -722,6 +722,24 @@ function normalizeRestaurants(items) {
   );
 }
 
+function normalizeFoods(items) {
+  return toArray(items).map((item, index) =>
+    typeof item === "string"
+      ? {
+          name: item,
+          description: "A regional specialty worth adding to your food list.",
+          best_time: "Anytime",
+          where_to_try: "Popular local dining areas",
+        }
+      : {
+          name: item?.name || item?.dish || `Local dish ${index + 1}`,
+          description: item?.description || "A representative local flavor to try during the trip.",
+          best_time: item?.best_time || "Anytime",
+          where_to_try: item?.where_to_try || "Popular local dining areas",
+        }
+  );
+}
+
 function normalizeTransport(items) {
   return toArray(items).map((item, index) =>
     typeof item === "string"
@@ -940,6 +958,7 @@ export default function Page() {
         itinerary: normalizeItinerary(plan.itinerary),
         attractions: normalizeAttractions(plan.attractions),
         restaurants: normalizeRestaurants(plan.restaurants),
+        must_try_foods: normalizeFoods(plan.must_try_foods),
         transport_options: normalizeTransport(plan.transport_options),
         budget: buildBudget(plan, form),
         destination_summary: plan.destination_summary || `A tailored trip to ${form.to}.`,
@@ -1293,6 +1312,34 @@ export default function Page() {
                     )}
                   </div>
                 </div>
+
+                <div className="section-card">
+                  <div className="card-header">
+                    <div className="card-icon terra">🥘</div>
+                    <div>
+                      <div className="card-title">Must-Try Foods & Cuisines</div>
+                      <div className="card-subtitle">Signature flavors to actively seek out on this trip</div>
+                    </div>
+                  </div>
+                  <div className="card-body">
+                    {normalizedPlan.must_try_foods.length > 0 ? (
+                      <div className="grid-2">
+                        {normalizedPlan.must_try_foods.map((food) => (
+                          <div key={`${food.name}-${food.where_to_try}`} className="info-block">
+                            <h4>{food.best_time}</h4>
+                            <p style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{food.name}</p>
+                            <p>{food.description}</p>
+                            <p style={{ marginTop: 8, fontSize: 13, color: "var(--terracotta)" }}>
+                              Where to try: {food.where_to_try}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-state">Must-try food guidance was not included in this response.</div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1470,12 +1517,27 @@ export default function Page() {
                     <div className="card-icon sage">🗺️</div>
                     <div>
                       <div className="card-title">Route Optimization</div>
-                      <div className="card-subtitle">Verified sequencing from Mapbox travel-time data</div>
+                      <div className="card-subtitle">
+                        {normalizedPlan.route_optimization?.route_note || "Verified sequencing from Mapbox travel-time data"}
+                      </div>
                     </div>
                   </div>
                   <div className="card-body">
                     {normalizedPlan.route_optimization?.ordered_places?.length > 0 ? (
                       <>
+                        <div className="pill-list" style={{ marginBottom: 18 }}>
+                          {normalizedPlan.route_optimization?.recommended_profile && (
+                            <span className="pill">
+                              Recommended mode: {titleCase(normalizedPlan.route_optimization.recommended_profile)}
+                            </span>
+                          )}
+                          {normalizedPlan.route_optimization?.total_duration_label && (
+                            <span className="pill">Total transfer time: {normalizedPlan.route_optimization.total_duration_label}</span>
+                          )}
+                          {normalizedPlan.route_optimization?.total_distance_label && (
+                            <span className="pill">Total route distance: {normalizedPlan.route_optimization.total_distance_label}</span>
+                          )}
+                        </div>
                         <div className="route-list">
                           {normalizedPlan.route_optimization.ordered_places.map((item, index) => {
                             const nextLeg = normalizedPlan.route_optimization?.ordered_legs?.[index];
@@ -1487,6 +1549,7 @@ export default function Page() {
                                   <div className="list-item-sub">{item.source || "Verified stop"}</div>
                                   {nextLeg && (
                                     <div className="pill-list" style={{ marginTop: 8 }}>
+                                      <span className="pill">{nextLeg.profile_label || "Transfer"}</span>
                                       <span className="pill">Next leg: {nextLeg.duration_label}</span>
                                       <span className="pill">{nextLeg.distance_label}</span>
                                     </div>
@@ -1501,7 +1564,18 @@ export default function Page() {
                             {normalizedPlan.route_optimization.ordered_legs.map((leg, index) => (
                               <div key={`${leg.from}-${leg.to}-${index}`} className="list-item">
                                 <div className="list-item-title">{leg.from} to {leg.to}</div>
-                                <div className="list-item-sub">{leg.duration_label} · {leg.distance_label}</div>
+                                <div className="list-item-sub">
+                                  {(leg.profile_label || "Transfer")} · {leg.duration_label} · {leg.distance_label}
+                                </div>
+                                {Array.isArray(leg.step_summary) && leg.step_summary.length > 0 && (
+                                  <div className="pill-list" style={{ marginTop: 10 }}>
+                                    {leg.step_summary.map((step, stepIndex) => (
+                                      <span key={`${leg.from}-${leg.to}-step-${stepIndex}`} className="pill">
+                                        {step}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>
