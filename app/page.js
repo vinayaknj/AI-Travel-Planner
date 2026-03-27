@@ -790,6 +790,11 @@ function normalizeItinerary(items) {
 }
 
 function buildBudget(plan, form) {
+  const budgetEstimateText =
+    typeof plan?.budget_estimate === "string"
+      ? plan.budget_estimate
+      : "";
+
   if (plan?.budget && typeof plan.budget === "object") {
     return {
       ...plan.budget,
@@ -836,8 +841,8 @@ function buildBudget(plan, form) {
     food: { amount: food, note: `${days} day${days > 1 ? "s" : ""} of meals, snacks, and one or two nicer stops.` },
     activities: { amount: activities, note: "Entry tickets, local experiences, and sightseeing buffer." },
     total,
-    saving_tips: plan?.budget_estimate
-      ? [plan.budget_estimate]
+    saving_tips: budgetEstimateText
+      ? [budgetEstimateText]
       : [`For ${days} days in ${form.to}, this is a practical ${form.budget} estimate in INR. Stay slightly outside the busiest zone to lower the total.`],
   };
 }

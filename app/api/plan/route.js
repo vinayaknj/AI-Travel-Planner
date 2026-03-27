@@ -173,6 +173,102 @@
       return { clothing: [], essentials, health: [], documents: [], tech: [] };
     }
 
+    function extractAmount(value) {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value === "string") {
+        const numeric = Number(String(value).replace(/[^0-9.]/g, ""));
+        return Number.isFinite(numeric) ? numeric : undefined;
+      }
+      if (value && typeof value === "object") {
+        if (typeof value.amount === "number" && Number.isFinite(value.amount)) return value.amount;
+        if (typeof value.amount === "string") {
+          const numeric = Number(String(value.amount).replace(/[^0-9.]/g, ""));
+          return Number.isFinite(numeric) ? numeric : undefined;
+        }
+        if (typeof value.value === "number" && Number.isFinite(value.value)) return value.value;
+        if (typeof value.cost === "number" && Number.isFinite(value.cost)) return value.cost;
+      }
+      return undefined;
+    }
+
+    function sanitizeBudgetLine(value, fallbackNote) {
+      if (value == null) return undefined;
+      if (typeof value === "number" || typeof value === "string") {
+        return {
+          amount: extractAmount(value),
+          note: typeof value === "string" ? value : fallbackNote,
+        };
+      }
+      if (typeof value === "object") {
+        return {
+          ...value,
+          amount: extractAmount(value),
+          note:
+            typeof value.note === "string"
+              ? value.note
+              : typeof value.description === "string"
+                ? value.description
+                : typeof value.label === "string"
+                  ? value.label
+                  : fallbackNote,
+        };
+      }
+      return undefined;
+    }
+
+    function sanitizeBudget(budgetValue) {
+      if (!budgetValue || typeof budgetValue !== "object" || Array.isArray(budgetValue)) return undefined;
+
+      const travel = sanitizeBudgetLine(budgetValue.travel, "Intercity travel estimate");
+      const accommodation = sanitizeBudgetLine(budgetValue.accommodation, "Accommodation estimate");
+      const food = sanitizeBudgetLine(budgetValue.food, "Food estimate");
+      const activities = sanitizeBudgetLine(budgetValue.activities, "Activities estimate");
+      const computedTotal =
+        [travel?.amount, accommodation?.amount, food?.amount, activities?.amount]
+          .filter((value) => Number.isFinite(value))
+          .reduce((sum, value) => sum + value, 0);
+
+      return {
+        ...budgetValue,
+        currency:
+          typeof budgetValue.currency === "string" && budgetValue.currency.trim()
+            ? budgetValue.currency
+            : "INR",
+        travel,
+        accommodation,
+        food,
+        activities,
+        total: extractAmount(budgetValue.total) ?? (computedTotal > 0 ? computedTotal : undefined),
+        saving_tips: toStringList(budgetValue.saving_tips),
+      };
+    }
+
+    function sanitizeTransportOptions(items) {
+      return toArray(items).map((item, index) => {
+        if (typeof item === "string") {
+          return {
+            mode: item,
+            icon: index === 0 ? "🚕" : "🚌",
+            route: "",
+            duration: "",
+            cost: "",
+            recommended: index === 0,
+            note: "",
+          };
+        }
+
+        return {
+          mode: item?.mode || item?.name || `Option ${index + 1}`,
+          icon: item?.icon || (index === 0 ? "🚕" : "🚌"),
+          route: item?.route || item?.path || "",
+          duration: item?.duration || item?.time || "",
+          cost: item?.cost || item?.price || "",
+          recommended: Boolean(item?.recommended),
+          note: item?.note || item?.description || "",
+        };
+      });
+    }
+
     function sanitizeObjectList(items, mapper) {
       return toArray(items).map(mapper).filter(Boolean);
     }
@@ -208,10 +304,15 @@
             : "A practical trip plan built from verified travel data.",
         climate_note:
           typeof rawPlan.climate_note === "string" ? rawPlan.climate_note : "",
+        budget_estimate:
+          typeof rawPlan.budget_estimate === "string"
+            ? rawPlan.budget_estimate
+            : "",
+        budget: sanitizeBudget(rawPlan.budget),
         attractions: toArray(rawPlan.attractions),
         restaurants: toArray(rawPlan.restaurants),
         must_try_foods: sanitizeMustTryFoods(rawPlan.must_try_foods),
-        transport_options: toArray(rawPlan.transport_options),
+        transport_options: sanitizeTransportOptions(rawPlan.transport_options),
         best_transport: typeof rawPlan.best_transport === "string" ? rawPlan.best_transport : "",
         local_tips: toStringList(rawPlan.local_tips),
         safety_alerts: sanitizeAlerts(rawPlan.safety_alerts),
@@ -320,7 +421,6 @@
 Return ONLY valid JSON.
 Write all output text in English only.
 Use the provider-backed context exactly as given when naming places, weather, or routing details.
-Do not invent attractions or restaurants that are not in the verified lists.
 If provider-backed context is unavailable, still create a rich, detailed, practical travel plan from the user request alone.
 When data is inferred instead of verified, keep it clearly practical and avoid fake precise claims.
 When you need to infer soft guidance like pacing, local transport, or stay area suggestions, keep it generic and clearly practical.
@@ -416,7 +516,9 @@ Output:
 - Budget must be reasonably tailored to ${days} day(s) in ${form.to}, not a generic template
 - Include line items for travel, accommodation, food, and activities, plus total
 - Make budget_estimate a short practical explanation of why the INR estimate is reasonable
-- Use only the verified attractions/restaurants above when naming places
+- Prefer the verified attractions/restaurants above when naming places
+- You may include additional must-see attractions or food suggestions beyond the verified lists when they are iconic, widely known, and clearly useful for the trip
+- If adding extra non-verified places, mark source as "AI Suggested" and avoid fake precision about fees, timings, or niche claims
 - If verified attractions/restaurants are unavailable, use broad destination-level guidance instead of fake precise venue facts
 - Use the suggested visit order and keep nearby places together
 - Include location and short transfer-aware tips when possible
@@ -436,20 +538,44 @@ Output:
     }
 
     function mergeByIdentity(baseItems, enrichedItems) {
+      const baseList = toArray(baseItems);
+      const enrichedList = toArray(enrichedItems);
+
+      if (baseList.length === 0) {
+        return enrichedList;
+      }
+
+      const baseKeys = new Set(
+        baseList
+          .map((item) => (item && typeof item === "object" ? normalizeKey(item.xid || item.name) : ""))
+          .filter(Boolean)
+      );
+
       const enrichedMap = new Map(
-        toArray(enrichedItems).map((item) => {
+        enrichedList.map((item) => {
           if (!item || typeof item !== "object") return [null, null];
           const key = normalizeKey(item.xid || item.name);
           return key ? [key, item] : [null, null];
         }).filter(([key]) => Boolean(key))
       );
 
-      return toArray(baseItems).map((item) => {
+      return baseList.map((item) => {
         if (!item || typeof item !== "object") return item;
         const key = normalizeKey(item.xid || item.name);
         const enriched = key ? enrichedMap.get(key) : null;
         return enriched ? { ...item, ...enriched, xid: item.xid || enriched.xid, name: item.name || enriched.name } : item;
-      });
+      }).concat(
+        enrichedList
+          .filter((item) => item && typeof item === "object")
+          .filter((item) => {
+            const key = normalizeKey(item.xid || item.name);
+            return key && !baseKeys.has(key);
+          })
+          .map((item) => ({
+            ...item,
+            source: item.source || "AI Suggested",
+          }))
+      );
     }
 
     function mergeVerifiedData(plan, verifiedContext, weatherContext, routingContext) {
@@ -490,6 +616,53 @@ Output:
         ...data,
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+
+    function summarizeSchemaIssues(error) {
+      return error?.issues?.slice(0, 10).map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+        code: issue.code,
+        expected: issue.expected,
+        received: issue.received,
+      })) || [];
+    }
+
+    function summarizePlanForDebug(plan) {
+      if (!plan || typeof plan !== "object") return { kind: typeof plan };
+
+      return {
+        keys: Object.keys(plan).sort(),
+        itinerary_days: Array.isArray(plan.itinerary) ? plan.itinerary.length : 0,
+        attractions: Array.isArray(plan.attractions) ? plan.attractions.length : 0,
+        restaurants: Array.isArray(plan.restaurants) ? plan.restaurants.length : 0,
+        must_try_foods: Array.isArray(plan.must_try_foods) ? plan.must_try_foods.length : 0,
+        transport_options: Array.isArray(plan.transport_options) ? plan.transport_options.length : 0,
+        local_transport: Array.isArray(plan.local_transport) ? plan.local_transport.length : 0,
+        booking_info: Array.isArray(plan.booking_info) ? plan.booking_info.length : 0,
+        local_tips: Array.isArray(plan.local_tips) ? plan.local_tips.length : 0,
+        has_budget: Boolean(plan.budget),
+        budget_shape: plan.budget && typeof plan.budget === "object"
+          ? {
+              currency: plan.budget.currency,
+              travel_type: typeof plan.budget.travel,
+              accommodation_type: typeof plan.budget.accommodation,
+              food_type: typeof plan.budget.food,
+              activities_type: typeof plan.budget.activities,
+              total: plan.budget.total,
+            }
+          : null,
+        itinerary_preview: Array.isArray(plan.itinerary)
+          ? plan.itinerary.slice(0, 2).map((day) => ({
+              day: day?.day,
+              date: day?.date,
+              theme: day?.theme,
+              morning_title: day?.morning?.title,
+              afternoon_title: day?.afternoon?.title,
+              evening_title: day?.evening?.title,
+            }))
+          : [],
+      };
     }
 
     export async function POST(req) {
@@ -606,6 +779,17 @@ Output:
           weatherContext,
           routingContext
         );
+        logInfo("prompt context built", {
+          to,
+          days,
+          interests,
+          user_prompt_chars: userPrompt.length,
+          verified_attractions: verifiedContext?.attractions?.length || 0,
+          verified_restaurants: verifiedContext?.restaurants?.length || 0,
+          weather_alerts: weatherContext?.safety_alerts?.length || 0,
+          route_places: routingContext?.ordered_places?.length || 0,
+          route_legs: routingContext?.ordered_legs?.length || 0,
+        });
 
         let plan = null;
         let provider = null;
@@ -634,6 +818,7 @@ Output:
           logInfo("calling groq", { to, days });
           const groqData = sanitizePlan(await callGroq(systemPrompt, userPrompt), days);
           const parsed = PlanSchema.safeParse(groqData);
+          logInfo("groq normalized output", summarizePlanForDebug(groqData));
           groqPlan = verifiedContext ? mergeVerifiedData(groqData, verifiedContext, weatherContext, routingContext) : groqData;
           groqSchemaValid = parsed.success;
           modelStatus.groq.success = true;
@@ -649,7 +834,8 @@ Output:
             plan = groqPlan;
             errors.push("Groq schema invalid");
             logInfo("groq schema invalid", {
-              issues: parsed.error.issues.map((issue) => issue.path.join(".")).slice(0, 10),
+              issues: summarizeSchemaIssues(parsed.error),
+              normalized_output: summarizePlanForDebug(groqData),
             });
           }
         } catch (e) {
@@ -669,6 +855,7 @@ Output:
           });
           const geminiData = sanitizePlan(await callGemini(systemPrompt, userPrompt), days);
           const parsed = PlanSchema.safeParse(geminiData);
+          logInfo("gemini normalized output", summarizePlanForDebug(geminiData));
           geminiPlan = verifiedContext ? mergeVerifiedData(geminiData, verifiedContext, weatherContext, routingContext) : geminiData;
           geminiSchemaValid = parsed.success;
           modelStatus.gemini.success = true;
@@ -681,7 +868,8 @@ Output:
           } else {
             errors.push("Gemini schema invalid");
             logInfo("gemini schema invalid", {
-              issues: parsed.error.issues.map((issue) => issue.path.join(".")).slice(0, 10),
+              issues: summarizeSchemaIssues(parsed.error),
+              normalized_output: summarizePlanForDebug(geminiData),
             });
           }
         } catch (e) {
@@ -792,7 +980,7 @@ Output:
               },
             ],
             best_transport: routingContext?.route_note || `Use the simplest low-friction transfer option based on your budget and energy each day.`,
-            budget_estimate: budget,
+            budget_estimate: `A practical ${budget} budget for ${days} day(s) in ${to}, balancing transport, stay, meals, and activities in INR.`,
             safety_alerts: weatherContext?.safety_alerts || [],
             packing_list: weatherContext?.packing_list || {},
             local_transport: [
@@ -861,6 +1049,7 @@ Output:
           errors,
           verified_places: result?._meta?.verified_places,
           mapbox_routing: result?._meta?.mapbox_routing,
+          final_summary: summarizePlanForDebug(result),
         });
         cache.set(cacheKey, result);
         return NextResponse.json(result);
